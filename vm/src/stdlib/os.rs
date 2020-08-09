@@ -2430,11 +2430,6 @@ mod nt {
     }
 
     #[cfg(target_env = "msvc")]
-    extern "C" {
-        fn _wexecv(cmdname: *const u16, argv: *const *const u16) -> intptr_t;
-    }
-
-    #[cfg(target_env = "msvc")]
     #[pyfunction]
     fn execv(
         path: PyStringRef,
@@ -2444,8 +2439,9 @@ mod nt {
         use std::iter::once;
         use std::os::windows::prelude::*;
         use std::str::FromStr;
+        use libc::{wexecv, wchar_t};
 
-        let path: Vec<u16> = ffi::OsString::from_str(path.borrow_value())
+        let path: Vec<wchar_t> = ffi::OsString::from_str(path.borrow_value())
             .unwrap()
             .encode_wide()
             .chain(once(0u16))
@@ -2466,18 +2462,18 @@ mod nt {
             );
         }
 
-        let argv: Vec<Vec<u16>> = argv
+        let argv: Vec<Vec<wchar_t>> = argv
             .into_iter()
             .map(|s| s.encode_wide().chain(once(0u16)).collect())
             .collect();
 
-        let argv_execv: Vec<*const u16> = argv
+        let argv_execv: Vec<*const wchar_t> = argv
             .iter()
             .map(|v| v.as_ptr())
             .chain(once(std::ptr::null()))
             .collect();
 
-        if (unsafe { suppress_iph!(_wexecv(path.as_ptr(), argv_execv.as_ptr())) } == -1) {
+        if (unsafe { suppress_iph!(wexecv(path.as_ptr(), argv_execv.as_ptr())) } == -1) {
             Err(errno_err(vm))
         } else {
             Ok(())
