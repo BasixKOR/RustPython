@@ -159,7 +159,16 @@ impl IntoPyException for io::Error {
             Some(errno) => vm.ctx.new_int(errno),
             None => vm.get_none(),
         };
-        vm.set_attr(os_error.as_object(), "errno", errno).unwrap();
+        cfg_if::cfg_if! {
+            if #[cfg(windows)] {
+                vm.set_attr(os_error.as_object(), "winerror", errno).unwrap();
+                if let Some(winerror) = self.raw_os_error() {
+                    vm.set_attr(os_error.as_object(), "errno", vm.ctx.new_int(winerror_to_errno(winerror as _))).unwrap();
+                }
+            } else {
+                vm.set_attr(os_error.as_object(), "errno", errno).unwrap();
+            }
+        }
         os_error
     }
 }
@@ -196,6 +205,112 @@ impl IntoPyException for nix::Error {
 #[inline]
 pub fn errno_err(vm: &VirtualMachine) -> PyBaseExceptionRef {
     io::Error::last_os_error().into_pyexception(vm)
+}
+
+// Implementation based on CPython, https://github.com/python/cpython/blob/19052a11314e7be7ba003fd6cdbb5400a5d77d96/PC/errmap.h
+#[cfg(windows)]
+pub fn winerror_to_errno(winerror: u32) -> i32 {
+    use winapi::shared::winerror::*;
+    use libc::*;
+
+    // Unwrap FACILITY_WIN32 HRESULT errors.
+    let winerror = if (winerror & 0xFFFF0000) == 0x80070000 {
+        winerror & 0x0000FFFF
+    } else {
+        winerror
+    };
+
+    // Winsock error codes (10000-11999) are errno values.
+    if winerror >= 10000 && winerror < 12000 {
+        match winerror {
+            WSAEINTR | WSAEBADF | WSAEACCES | WSAEFAULT | WSAEINVAL | WSAEMFILE => {
+                return (winerror - 10000) as _
+            }
+            _ => return winerror as _,
+        }
+    }
+
+    match winerror {
+        ERROR_FILE_NOT_FOUND
+        | ERROR_PATH_NOT_FOUND
+        | ERROR_INVALID_DRIVE
+        | ERROR_NO_MORE_FILES
+        | ERROR_BAD_NETPATH
+        | ERROR_BAD_NET_NAME
+        | ERROR_BAD_PATHNAME
+        | ERROR_FILENAME_EXCED_RANGE => ENOENT,
+
+        ERROR_BAD_ENVIRONMENT => E2BIG,
+
+        ERROR_BAD_FORMAT
+        | ERROR_INVALID_STARTING_CODESEG
+        | ERROR_INVALID_STACKSEG
+        | ERROR_INVALID_MODULETYPE
+        | ERROR_INVALID_EXE_SIGNATURE
+        | ERROR_EXE_MARKED_INVALID
+        | ERROR_BAD_EXE_FORMAT
+        | ERROR_ITERATED_DATA_EXCEEDS_64k
+        | ERROR_INVALID_MINALLOCSIZE
+        | ERROR_DYNLINK_FROM_INVALID_RING
+        | ERROR_IOPL_NOT_ENABLED
+        | ERROR_INVALID_SEGDPL
+        | ERROR_AUTODATASEG_EXCEEDS_64k
+        | ERROR_RING2SEG_MUST_BE_MOVABLE
+        | ERROR_RELOC_CHAIN_XEEDS_SEGLIM
+        | ERROR_INFLOOP_IN_RELOC_CHAIN => ENOEXEC,
+
+        ERROR_INVALID_HANDLE | ERROR_INVALID_TARGET_HANDLE | ERROR_DIRECT_ACCESS_HANDLE => EBADF,
+
+        ERROR_WAIT_NO_CHILDREN | ERROR_CHILD_NOT_COMPLETE => ECHILD,
+
+        ERROR_NO_PROC_SLOTS | ERROR_MAX_THRDS_REACHED | ERROR_NESTING_NOT_ALLOWED => EAGAIN,
+
+        ERROR_ACCESS_DENIED
+        | ERROR_CURRENT_DIRECTORY
+        | ERROR_WRITE_PROTECT
+        | ERROR_BAD_UNIT
+        | ERROR_NOT_READY
+        | ERROR_BAD_COMMAND
+        | ERROR_CRC
+        | ERROR_BAD_LENGTH
+        | ERROR_SEEK
+        | ERROR_NOT_DOS_DISK
+        | ERROR_SECTOR_NOT_FOUND
+        | ERROR_OUT_OF_PAPER
+        | ERROR_WRITE_FAULT
+        | ERROR_READ_FAULT
+        | ERROR_GEN_FAILURE
+        | ERROR_SHARING_VIOLATION
+        | ERROR_LOCK_VIOLATION
+        | ERROR_WRONG_DISK
+        | ERROR_SHARING_BUFFER_EXCEEDED
+        | ERROR_NETWORK_ACCESS_DENIED
+        | ERROR_CANNOT_MAKE
+        | ERROR_FAIL_I24
+        | ERROR_DRIVE_LOCKED
+        | ERROR_SEEK_ON_DEVICE
+        | ERROR_NOT_LOCKED
+        | ERROR_LOCK_FAILED
+        | 35 => EACCES,
+
+        ERROR_FILE_EXISTS | ERROR_ALREADY_EXISTS => EEXIST,
+
+        ERROR_NOT_SAME_DEVICE => EXDEV,
+
+        ERROR_DIRECTORY => ENOTDIR,
+
+        ERROR_TOO_MANY_OPEN_FILES => EMFILE,
+
+        ERROR_DISK_FULL => ENOSPC,
+
+        ERROR_BROKEN_PIPE | ERROR_NO_DATA => EPIPE,
+
+        ERROR_DIR_NOT_EMPTY => ENOTEMPTY,
+
+        ERROR_NO_UNICODE_TRANSLATION => EILSEQ,
+
+        ERROR_INVALID_FUNCTION | ERROR_INVALID_ACCESS | ERROR_INVALID_DATA | ERROR_INVALID_PARAMETER | ERROR_NEGATIVE_SEEK | _ => EINVAL
+    }
 }
 
 #[allow(dead_code)]
